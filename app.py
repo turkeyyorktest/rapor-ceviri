@@ -10,6 +10,41 @@ st.set_page_config(
     layout="centered"
 )
 
+# ŞİFRE KORUMASI
+def check_password():
+    def password_entered():
+        if st.session_state["password"] == "OxdXmX2vxM":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.title("🔐 Giriş")
+        st.text_input(
+            "Şifre", 
+            type="password", 
+            on_change=password_entered, 
+            key="password"
+        )
+        st.info("Lütfen şifrenizi girin")
+        return False
+    elif not st.session_state["password_correct"]:
+        st.title("🔐 Giriş")
+        st.text_input(
+            "Şifre", 
+            type="password", 
+            on_change=password_entered, 
+            key="password"
+        )
+        st.error("❌ Yanlış şifre!")
+        return False
+    else:
+        return True
+
+if not check_password():
+    st.stop()
+
 # Başlık
 st.title("🇹🇷 YorkTest Rapor Çevirici")
 st.markdown("**İngilizce DOCX raporlarını Türkçe'ye çevirin**")
