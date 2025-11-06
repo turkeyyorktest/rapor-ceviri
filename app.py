@@ -1,208 +1,225 @@
 import streamlit as st
-import pandas as pd
 from docx import Document
+from docx.shared import RGBColor
+import pandas as pd
 import io
+import re
+
+# Şifre
+CORRECT_PASSWORD = "OxdXmX2vxM"
 
 # Sayfa ayarları
-st.set_page_config(
-    page_title="YorkTest Rapor Çevirici",
-    page_icon="🇹🇷",
-    layout="centered"
-)
+st.set_page_config(page_title="Rapor Çeviri Sistemi", page_icon="🔬", layout="wide")
 
-# ŞİFRE KORUMASI
-def check_password():
-    def password_entered():
-        if st.session_state["password"] == "OxdXmX2vxM":
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
+# Şifre kontrolü
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.title("🔐 Rapor Çeviri Sistemi")
+    st.markdown("### Lütfen şifrenizi girin")
+    
+    password = st.text_input("Şifre:", type="password", key="password_input")
+    
+    if st.button("Giriş Yap", type="primary"):
+        if password == CORRECT_PASSWORD:
+            st.session_state.authenticated = True
+            st.rerun()
         else:
-            st.session_state["password_correct"] = False
-
-    if "password_correct" not in st.session_state:
-        st.title("🔐 Giriş")
-        st.text_input(
-            "Şifre", 
-            type="password", 
-            on_change=password_entered, 
-            key="password"
-        )
-        st.info("Lütfen şifrenizi girin")
-        return False
-    elif not st.session_state["password_correct"]:
-        st.title("🔐 Giriş")
-        st.text_input(
-            "Şifre", 
-            type="password", 
-            on_change=password_entered, 
-            key="password"
-        )
-        st.error("❌ Yanlış şifre!")
-        return False
-    else:
-        return True
-
-if not check_password():
+            st.error("❌ Hatalı şifre! Lütfen tekrar deneyin.")
+    
     st.stop()
 
-# Başlık
-st.title("🇹🇷 YorkTest Rapor Çevirici")
-st.markdown("**İngilizce DOCX raporlarını Türkçe'ye çevirin**")
-st.markdown("---")
-
-# Excel çeviri listesini yükle
+# Excel dosyasını yükle
 @st.cache_data
-def load_translations():
-    df = pd.read_excel("Premium food&drink list_179 (1).xlsx")
+def load_translation_dict():
+    try:
+        df = pd.read_excel('Premium food&drink list_179 (1).xlsx')
+        translation_dict = {}
+        
+        for _, row in df.iterrows():
+            english = str(row.iloc[0]).strip()
+            turkish = str(row.iloc[1]).strip()
+            
+            if english and turkish and english != 'nan' and turkish != 'nan':
+                translation_dict[english.lower()] = turkish
+        
+        return translation_dict
+    except Exception as e:
+        st.error(f"Çeviri dosyası yüklenemedi: {str(e)}")
+        return {}
 
-    translation_dict = {}
-    reverse_dict = {}
+# Çeviri fonksiyonu - Çok kelimeli ifadeleri önceliklendir
+def translate_text(text, translation_dict):
+    if not text or pd.isna(text):
+        return text
+    
+    text_str = str(text).strip()
+    text_lower = text_str.lower()
+    
+    # Önce tam eşleşme ara
+    if text_lower in translation_dict:
+        return translation_dict[text_lower]
+    
+    # Çok kelimeli ifadeleri bul ve çevir (uzundan kısaya sırala)
+    sorted_keys = sorted(translation_dict.keys(), key=len, reverse=True)
+    
+    result = text_str
+    replacements = []
+    
+    for key in sorted_keys:
+        if len(key.split()) > 1:  # Sadece çok kelimeli ifadeler
+            pattern = re.compile(re.escape(key), re.IGNORECASE)
+            matches = list(pattern.finditer(result.lower()))
+            
+            for match in matches:
+                start, end = match.span()
+                replacements.append((start, end, translation_dict[key]))
+    
+    # Çakışmaları önlemek için sıralama
+    replacements.sort(key=lambda x: x[0], reverse=True)
+    
+    for start, end, replacement in replacements:
+        result = result[:start] + replacement + result[end:]
+    
+    # Tek kelimeli çeviriler
+    words = result.split()
+    translated_words = []
+    
+    for word in words:
+        word_clean = word.strip('()/-,.')
+        word_lower = word_clean.lower()
+        
+        if word_lower in translation_dict:
+            prefix = word[:len(word) - len(word.lstrip('()/-,.'))]
+            suffix = word[len(word.rstrip('()/-,.')):]
+            translated_words.append(prefix + translation_dict[word_lower] + suffix)
+        else:
+            translated_words.append(word)
+    
+    return ' '.join(translated_words)
 
-    for idx, row in df.iterrows():
-        if idx == 0:
-            continue
-        english = str(row.iloc[0]).strip()
-        turkish = str(row.iloc[1]).strip()
+# DOCX çeviri fonksiyonu - FORMATLAR KORUNUYOR
+def translate_docx(input_file, translation_dict):
+    doc = Document(input_file)
+    
+    # Paragrafları çevir
+    for paragraph in doc.paragraphs:
+        for run in paragraph.runs:
+            if run.text.strip():
+                # Orijinal formatı kaydet
+                original_font = run.font
+                original_bold = run.bold
+                original_italic = run.italic
+                original_underline = run.underline
+                original_color = run.font.color.rgb if run.font.color and run.font.color.rgb else None
+                original_highlight = run.font.highlight_color
+                original_size = run.font.size
+                
+                # Metni çevir
+                run.text = translate_text(run.text, translation_dict)
+                
+                # Formatı geri yükle
+                run.bold = original_bold
+                run.italic = original_italic
+                run.underline = original_underline
+                if original_color:
+                    run.font.color.rgb = original_color
+                if original_highlight:
+                    run.font.highlight_color = original_highlight
+                if original_size:
+                    run.font.size = original_size
+    
+    # Tabloları çevir - ARKA PLAN RENKLERİNİ KORU
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                # Hücre arka plan rengini kaydet
+                cell_shading = cell._element.xpath('.//w:shd')
+                original_fill = None
+                if cell_shading:
+                    original_fill = cell_shading[0].get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}fill')
+                
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        if run.text.strip():
+                            # Orijinal formatı kaydet
+                            original_bold = run.bold
+                            original_italic = run.italic
+                            original_underline = run.underline
+                            original_color = run.font.color.rgb if run.font.color and run.font.color.rgb else None
+                            original_highlight = run.font.highlight_color
+                            original_size = run.font.size
+                            
+                            # Metni çevir
+                            run.text = translate_text(run.text, translation_dict)
+                            
+                            # Formatı geri yükle
+                            run.bold = original_bold
+                            run.italic = original_italic
+                            run.underline = original_underline
+                            if original_color:
+                                run.font.color.rgb = original_color
+                            if original_highlight:
+                                run.font.highlight_color = original_highlight
+                            if original_size:
+                                run.font.size = original_size
+                
+                # Hücre arka plan rengini geri yükle
+                if original_fill and cell_shading:
+                    cell_shading[0].set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}fill', original_fill)
+    
+    # Belleğe kaydet
+    output = io.BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return output
 
-        if english and turkish and english != 'nan' and turkish != 'nan':
-            translation_dict[english] = turkish
-            reverse_dict[turkish] = english
+# Ana uygulama
+st.title("🔬 Premium Food Intolerance Test - Rapor Çeviri Sistemi")
+st.markdown("### İngilizce raporları Türkçe'ye çevirin")
 
-            # Varyasyonlar
-            translation_dict[english.lower()] = turkish
-            for apos in ["'", "'", "`", "'"]:
-                translation_dict[english.replace(apos, "'")] = turkish
-                translation_dict[english.replace(apos, "")] = turkish
+# Çeviri sözlüğünü yükle
+translation_dict = load_translation_dict()
 
-    return translation_dict, reverse_dict
-
-try:
-    translation_dict, reverse_dict = load_translations()
-    sorted_foods = sorted(translation_dict.keys(), key=len, reverse=True)
-    st.success(f"✅ {len(set(translation_dict.values()))} gıda çevirisi yüklendi!")
-except Exception as e:
-    st.error(f"❌ Çeviri listesi yüklenemedi: {e}")
-    st.stop()
-
-# Dosya yükleme
-st.markdown("### 📤 1. DOCX Dosyasını Yükleyin")
-uploaded_file = st.file_uploader(
-    "İngilizce YorkTest raporunu seçin (DOCX formatında)",
-    type=['docx'],
-    help="Sadece .docx uzantılı dosyalar kabul edilir"
-)
-
-if uploaded_file is not None:
-    st.success(f"✅ Dosya yüklendi: **{uploaded_file.name}**")
-
-    # Çevir butonu
-    st.markdown("### 🔄 2. Çeviriyi Başlatın")
-
-    if st.button("🇹🇷 TÜRKÇE'YE ÇEVİR", type="primary", use_container_width=True):
-        with st.spinner("⏳ Çeviri yapılıyor... Lütfen bekleyin..."):
-            try:
-                # DOCX'i aç
-                doc = Document(io.BytesIO(uploaded_file.read()))
-
-                translation_count = 0
-                translated_foods = set()
-
-                def translate_full_text(text):
-                    if not text or len(text.strip()) < 2:
-                        return text, 0
-
-                    original = text
-                    count = 0
-
-                    for english_food in sorted_foods:
-                        if english_food in text:
-                            turkish_food = translation_dict[english_food]
-                            if turkish_food not in text:
-                                text = text.replace(english_food, turkish_food)
-                                count += 1
-                                translated_foods.add(f"{english_food} → {turkish_food}")
-
-                    return text, count
-
-                # Paragrafları çevir
-                for para in doc.paragraphs:
-                    full_para_text = para.text
-
-                    if not full_para_text or len(full_para_text.strip()) < 2:
-                        continue
-
-                    new_para_text, count = translate_full_text(full_para_text)
-
-                    if new_para_text != full_para_text and count > 0:
-                        for run in para.runs:
-                            run.text = ''
-                        if para.runs:
-                            para.runs[0].text = new_para_text
-                        else:
-                            para.add_run(new_para_text)
-                        translation_count += count
-
-                # Tabloları çevir
-                for table in doc.tables:
-                    for row in table.rows:
-                        for cell in row.cells:
-                            cell_text = cell.text
-
-                            if not cell_text or len(cell_text.strip()) < 2:
-                                continue
-
-                            new_cell_text, count = translate_full_text(cell_text)
-
-                            if new_cell_text != cell_text and count > 0:
-                                if cell.paragraphs:
-                                    para = cell.paragraphs[0]
-                                    for run in para.runs:
-                                        run.text = ''
-                                    if para.runs:
-                                        para.runs[0].text = new_cell_text
-                                    else:
-                                        para.add_run(new_cell_text)
-                                translation_count += count
-
-                # Dosyayı kaydet
-                output = io.BytesIO()
-                doc.save(output)
-                output.seek(0)
-
-                # Başarı mesajı
-                st.success("🎉 Çeviri tamamlandı!")
-                st.info(f"📊 **{len(translated_foods)}** farklı gıda çevrildi")
-
-                # İndirme butonu
-                st.markdown("### 📥 3. Türkçe Dosyayı İndirin")
-
-                # Orijinal dosya adından müşteri adını çıkar
-                original_name = uploaded_file.name.replace('.docx', '')
-                output_name = f"{original_name}_TURKCE.docx"
-
-                st.download_button(
-                    label="⬇️ TÜRKÇE DOCX'İ İNDİR",
-                    data=output,
-                    file_name=output_name,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    type="primary",
-                    use_container_width=True
-                )
-
-                # Çevrilen örnekler
-                with st.expander("🔍 Çevrilen Gıdaları Görüntüle"):
-                    for item in sorted(translated_foods)[:50]:
-                        st.text(f"• {item}")
-                    if len(translated_foods) > 50:
-                        st.text(f"... ve {len(translated_foods) - 50} tane daha")
-
-            except Exception as e:
-                st.error(f"❌ Hata oluştu: {e}")
-                st.error("Lütfen dosyanın doğru formatta olduğundan emin olun.")
-
+if translation_dict:
+    st.success(f"✅ {len(translation_dict)} çeviri yüklendi!")
+    
+    # Dosya yükleme
+    uploaded_file = st.file_uploader(
+        "DOCX dosyasını yükleyin",
+        type=['docx'],
+        help="Sadece .docx formatındaki dosyalar desteklenmektedir"
+    )
+    
+    if uploaded_file:
+        st.info(f"📄 Dosya: **{uploaded_file.name}**")
+        
+        if st.button("🚀 Çeviriyi Başlat", type="primary"):
+            with st.spinner("Çeviriliyor... Lütfen bekleyin..."):
+                try:
+                    # Çeviri yap
+                    translated_file = translate_docx(uploaded_file, translation_dict)
+                    
+                    # İndirme butonu
+                    st.success("✅ Çeviri tamamlandı!")
+                    
+                    output_filename = uploaded_file.name.replace('.docx', '_TR.docx')
+                    
+                    st.download_button(
+                        label="📥 Çevrilmiş Dosyayı İndir",
+                        data=translated_file,
+                        file_name=output_filename,
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+                    
+                except Exception as e:
+                    st.error(f"❌ Hata oluştu: {str(e)}")
 else:
-    st.info("👆 Lütfen yukarıdan bir DOCX dosyası yükleyin")
+    st.error("❌ Çeviri dosyası yüklenemedi!")
 
-# Alt bilgi
-st.markdown("---")
-st.markdown("YorkTest Türkiye - Rapor Çeviri Sistemi", unsafe_allow_html=True)
+# Çıkış butonu
+st.sidebar.markdown("---")
+if st.sidebar.button("🚪 Çıkış Yap"):
+    st.session_state.authenticated = False
+    st.rerun()
